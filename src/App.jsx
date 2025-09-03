@@ -138,11 +138,14 @@ export default function App() {
     return { nodes: allNodes, members: newMembers, plates: newPlates, plateIdByCoord };
   }, [xLines, zLines, pedestalHeight, points, zOrientation]);
 
-  const groupedPlates = useMemo(() => {
-    const platesToGroup = new Set();
+  const { groupedPlates, shearPlates } = useMemo(() => {
+    const momentPlates = new Set();
+    const shearPlates = new Set();
     const nx_plates = xLines.length - 1;
     const nz_plates = zLines.length - 1;
 
+    const numPlatesToAdd = Math.round(plateThickness / mesh);
+    
     points.forEach(p => {
       // Find the grid indices of the pedestal's center point
       const px_idx = xLines.indexOf(p.x);
@@ -152,29 +155,50 @@ export default function App() {
         return; // Pedestal point not on a grid line, skip grouping for this point
       }
       
-      const num_x_plates = Math.round(p.length / mesh);
-      const num_z_plates = Math.round(p.width / mesh);
+      const num_x_plates_moment = Math.round(p.length / mesh);
+      const num_z_plates_moment = Math.round(p.width / mesh);
 
-      // Determine the range of plate indices to include
-      const start_x_idx = Math.floor(px_idx - num_x_plates / 2);
-      const end_x_idx = Math.ceil(px_idx + num_x_plates / 2);
+      // Determine the range of plate indices to include for Moment group
+      const start_x_idx_moment = Math.floor(px_idx - num_x_plates_moment / 2);
+      const end_x_idx_moment = Math.ceil(px_idx + num_x_plates_moment / 2);
 
-      const start_z_idx = Math.floor(pz_idx - num_z_plates / 2);
-      const end_z_idx = Math.ceil(pz_idx + num_z_plates / 2);
+      const start_z_idx_moment = Math.floor(pz_idx - num_z_plates_moment / 2);
+      const end_z_idx_moment = Math.ceil(pz_idx + num_z_plates_moment / 2);
 
-      // Iterate and add plates to the group
-      for (let xi = Math.max(0, start_x_idx); xi < Math.min(nx_plates, end_x_idx); xi++) {
-        for (let zi = Math.max(0, start_z_idx); zi < Math.min(nz_plates, end_z_idx); zi++) {
+      // Add plates to Moment group
+      for (let xi = Math.max(0, start_x_idx_moment); xi < Math.min(nx_plates, end_x_idx_moment); xi++) {
+        for (let zi = Math.max(0, start_z_idx_moment); zi < Math.min(nz_plates, end_z_idx_moment); zi++) {
           const plateId = plateIdByCoord.get(`${xi},${zi}`);
           if (plateId) {
-            platesToGroup.add(plateId);
+            momentPlates.add(plateId);
+            shearPlates.add(plateId);
+          }
+        }
+      }
+
+      // Determine the range of plate indices to include for Shear group
+      const start_x_idx_shear = Math.floor(px_idx - num_x_plates_moment / 2 - numPlatesToAdd);
+      const end_x_idx_shear = Math.ceil(px_idx + num_x_plates_moment / 2 + numPlatesToAdd);
+      
+      const start_z_idx_shear = Math.floor(pz_idx - num_z_plates_moment / 2 - numPlatesToAdd);
+      const end_z_idx_shear = Math.ceil(pz_idx + num_z_plates_moment / 2 + numPlatesToAdd);
+
+      // Add plates to Shear group, including adjacent plates
+      for (let xi = Math.max(0, start_x_idx_shear); xi < Math.min(nx_plates, end_x_idx_shear); xi++) {
+        for (let zi = Math.max(0, start_z_idx_shear); zi < Math.min(nz_plates, end_z_idx_shear); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) {
+            shearPlates.add(plateId);
           }
         }
       }
     });
 
-    return Array.from(platesToGroup).sort((a,b) => a-b);
-  }, [points, xLines, zLines, plateIdByCoord, mesh]);
+    return {
+      groupedPlates: Array.from(momentPlates).sort((a,b) => a-b),
+      shearPlates: Array.from(shearPlates).sort((a,b) => a-b)
+    };
+  }, [points, xLines, zLines, plateIdByCoord, mesh, plateThickness]);
 
 
   // Click to create a point
@@ -219,6 +243,27 @@ export default function App() {
   // Delete a point
   const deletePoint = (id) => setPoints((arr) => arr.filter((p) => p.id !== id));
 
+  // Helper function to format grouped lines with character limit
+  const formatGroupLines = (groupName, ids) => {
+    const lines = [];
+    const charLimit = 60; // STAAD's default line width is 79, but groups are indented
+    let currentLine = `_` + groupName.toUpperCase();
+    for (const id of ids) {
+      const idStr = String(id);
+      const potentialNextLine = currentLine + " " + idStr;
+      if (potentialNextLine.length > charLimit) {
+        lines.push(currentLine + " -");
+        currentLine = idStr;
+      } else {
+        currentLine = potentialNextLine;
+      }
+    }
+    if (currentLine !== `_` + groupName.toUpperCase()) {
+      lines.push(currentLine);
+    }
+    return lines;
+  };
+
   // Export text in the prescribed format
   const exportText = useMemo(() => {
     const lines = [];
@@ -230,18 +275,58 @@ export default function App() {
     lines.push("INPUT WIDTH 79");
     lines.push("UNIT METER KN");
     lines.push("JOINT COORDINATES");
-    nodes.forEach((n) => {
-      lines.push(`${n.id} ${round3(n.x)} ${round3(n.y)} ${round3(n.z)};`);
+    
+    // Format joint coordinates with a 74 character limit
+    const charLimit = 74;
+    let currentLine = '';
+    nodes.forEach((n, index) => {
+      const jointStr = `${n.id} ${round3(n.x)} ${round3(n.y)} ${round3(n.z)}`;
+      if (currentLine === '') {
+        currentLine = jointStr;
+      } else if ((currentLine + '; ' + jointStr).length <= charLimit) {
+        currentLine += '; ' + jointStr;
+      } else {
+        lines.push(currentLine + ';');
+        currentLine = jointStr;
+      }
     });
+    if (currentLine !== '') {
+      lines.push(currentLine + ';');
+    }
+    
     lines.push("ELEMENT INCIDENCES SHELL");
-    plates.forEach((p) => {
-      lines.push(`${p.id} ${p.nodes.join(" ")};`);
+    
+    // Format plate incidences with a 74 character limit
+    currentLine = '';
+    plates.forEach((p, index) => {
+      const plateStr = `${p.id} ${p.nodes.join(" ")}`;
+      if (currentLine === '') {
+        currentLine = plateStr;
+      } else if ((currentLine + '; ' + plateStr).length <= charLimit) {
+        currentLine += '; ' + plateStr;
+      } else {
+        lines.push(currentLine + ';');
+        currentLine = plateStr;
+      }
     });
+    if (currentLine !== '') {
+      lines.push(currentLine + ';');
+    }
 
-    if (groupedPlates.length > 0) {
+    if (groupedPlates.length > 0 || shearPlates.length > 0) {
       lines.push("START GROUP DEFINITION");
       lines.push("ELEMENT");
-      lines.push(`_MOMENT ${groupedPlates.join(" ")}`);
+      
+      // Moment group
+      if (groupedPlates.length > 0) {
+        lines.push(...formatGroupLines("MOMENT", groupedPlates));
+      }
+
+      // 1-Way Shear group
+      if (shearPlates.length > 0) {
+        lines.push(...formatGroupLines("1_WAY_SHEAR", shearPlates));
+      }
+
       lines.push("END GROUP DEFINITION");
     }
 
@@ -290,7 +375,7 @@ export default function App() {
 
     lines.push("FINISH");
     return lines.join("\n");
-  }, [nodes, plates, members, plateThickness, groupedPlates]);
+  }, [nodes, plates, members, plateThickness, groupedPlates, shearPlates]);
 
   // Export with filename
   const downloadTxt = () => {
@@ -536,7 +621,7 @@ export default function App() {
         <div className="bg-white rounded-2xl shadow p-3">
           <div className="font-medium mb-2">Export Preview</div>
           <textarea
-            className="w-full h-full border rounded-xl p-2 text-xs font-mono"
+            className="w-full min-h-[720px] border rounded-xl p-2 text-xs font-mono"
             readOnly
             value={exportText}
           />
