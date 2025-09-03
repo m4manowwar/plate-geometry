@@ -14,7 +14,7 @@ export default function App() {
   // Inputs (meters)
   const [length, setLength] = useState(6); // X
   const [width, setWidth] = useState(4);  // Z
-  const [mesh, setMesh] = useState(0.5);  // square target size
+  const [mesh, setMesh] = useState(0.2);  // square target size
   const [pedestalHeight, setPedestalHeight] = useState(0.0);
   const [plateThickness, setPlateThickness] = useState(0.3); // New state for plate thickness
 
@@ -62,7 +62,7 @@ export default function App() {
           const t = a + j * step;
           if (t > a + 1e-9 && t < b - 1e-9) lines.add(t);
         }
-      }
+      } 
       const arr = Array.from(lines);
       arr.sort((x, y) => x - y);
       return arr;
@@ -73,10 +73,11 @@ export default function App() {
     return { xLines: xL, zLines: zL };
   }, [points, length, width, mesh]);
 
-  const { nodes, members, plates } = useMemo(() => {
+  const { nodes, members, plates, plateIdByCoord } = useMemo(() => {
     const allNodes = [];
     const newMembers = [];
     const newPlates = [];
+    const plateIdByCoord = new Map();
     let nodeIdCounter = 1;
     let plateIdCounter = 1;
 
@@ -121,18 +122,59 @@ export default function App() {
         const br = nodeIdAt(xi + 1, zi + 1); // bottom-right
         const bl = nodeIdAt(xi, zi + 1); // bottom-left
 
+        const currentPlateId = plateIdCounter++;
+        plateIdByCoord.set(`${xi},${zi}`, currentPlateId);
+
         let order;
         if (zOrientation === "up") {
           order = [bl, br, tr, tl];
         } else {
           order = [tl, tr, br, bl];
         }
-        newPlates.push({ id: plateIdCounter++, nodes: order });
+        newPlates.push({ id: currentPlateId, nodes: order });
       }
     }
 
-    return { nodes: allNodes, members: newMembers, plates: newPlates };
+    return { nodes: allNodes, members: newMembers, plates: newPlates, plateIdByCoord };
   }, [xLines, zLines, pedestalHeight, points, zOrientation]);
+
+  const groupedPlates = useMemo(() => {
+    const platesToGroup = new Set();
+    const nx_plates = xLines.length - 1;
+    const nz_plates = zLines.length - 1;
+
+    points.forEach(p => {
+      // Find the grid indices of the pedestal's center point
+      const px_idx = xLines.indexOf(p.x);
+      const pz_idx = zLines.indexOf(p.z);
+
+      if (px_idx === -1 || pz_idx === -1) {
+        return; // Pedestal point not on a grid line, skip grouping for this point
+      }
+      
+      const num_x_plates = Math.round(p.length / mesh);
+      const num_z_plates = Math.round(p.width / mesh);
+
+      // Determine the range of plate indices to include
+      const start_x_idx = Math.floor(px_idx - num_x_plates / 2);
+      const end_x_idx = Math.ceil(px_idx + num_x_plates / 2);
+
+      const start_z_idx = Math.floor(pz_idx - num_z_plates / 2);
+      const end_z_idx = Math.ceil(pz_idx + num_z_plates / 2);
+
+      // Iterate and add plates to the group
+      for (let xi = Math.max(0, start_x_idx); xi < Math.min(nx_plates, end_x_idx); xi++) {
+        for (let zi = Math.max(0, start_z_idx); zi < Math.min(nz_plates, end_z_idx); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) {
+            platesToGroup.add(plateId);
+          }
+        }
+      }
+    });
+
+    return Array.from(platesToGroup).sort((a,b) => a-b);
+  }, [points, xLines, zLines, plateIdByCoord, mesh]);
 
 
   // Click to create a point
@@ -196,6 +238,13 @@ export default function App() {
       lines.push(`${p.id} ${p.nodes.join(" ")};`);
     });
 
+    if (groupedPlates.length > 0) {
+      lines.push("START GROUP DEFINITION");
+      lines.push("ELEMENT");
+      lines.push(`_MOMENT ${groupedPlates.join(" ")}`);
+      lines.push("END GROUP DEFINITION");
+    }
+
     // Add plate properties
     if (plates.length > 0) {
       lines.push("ELEMENT PROPERTY");
@@ -241,7 +290,7 @@ export default function App() {
 
     lines.push("FINISH");
     return lines.join("\n");
-  }, [nodes, plates, members, plateThickness]);
+  }, [nodes, plates, members, plateThickness, groupedPlates]);
 
   // Export with filename
   const downloadTxt = () => {
@@ -309,7 +358,7 @@ export default function App() {
             <input
               className="border rounded-xl px-3 py-2 w-28"
               type="number"
-              step="0.1"
+              step="0.05"
               min={0.05}
               value={mesh}
               onChange={(e) => setMesh(Math.max(0.01, parseFloat(e.target.value) || 0.5))}
