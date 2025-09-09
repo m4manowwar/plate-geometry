@@ -10,6 +10,21 @@ const uniqSorted = (arr, eps = 1e-6) => {
   return a;
 };
 
+// Finds the index of the value in a sorted array that is closest to the target value.
+const findClosestIndex = (arr, target) => {
+  let closest = Infinity;
+  let closestIndex = -1;
+  for (let i = 0; i < arr.length; i++) {
+    const diff = Math.abs(arr[i] - target);
+    if (diff < closest) {
+      closest = diff;
+      closestIndex = i;
+    }
+  }
+  return closestIndex;
+};
+
+
 export default function App() {
   // Inputs (meters)
   const [length, setLength] = useState(6); // X
@@ -21,9 +36,14 @@ export default function App() {
   const [zOrientation, setZOrientation] = useState("down"); // "up" or "down"
   const [fileName, setFileName] = useState("Plate Geometry.STD");
 
+  // State for toggling group visibility
+  const [showMomentGroup, setShowMomentGroup] = useState(true);
+  const [showOneWayShear, setShowOneWayShear] = useState(true);
+  const [showTwoWayShear, setShowTwoWayShear] = useState(true);
+
+
   // Points placed by user (x,z,length,width). y is always 0 on the surface.
   const [points, setPoints] = useState([]); // {id, x, z, length, width}
-  const nextPointId = useRef(1);
 
   // View / SVG
   const pxPerMeter = 120; // base scale; viewBox keeps it responsive
@@ -38,8 +58,9 @@ export default function App() {
 
   // Function to add a point manually from input fields
   const addPointManually = () => {
-    const id = nextPointId.current++;
-    setPoints((p) => [...p, { id, x: newPointX, z: newPointZ, length: 0.5, width: 0.3 }]);
+    const maxId = points.length > 0 ? Math.max(...points.map(p => p.id)) : 0;
+    const newId = maxId + 1;
+    setPoints((p) => [...p, { id: newId, x: newPointX, z: newPointZ, length: 0.5, width: 0.3 }]);
     setNewPointX(0);
     setNewPointZ(0);
   };
@@ -138,57 +159,62 @@ export default function App() {
     return { nodes: allNodes, members: newMembers, plates: newPlates, plateIdByCoord };
   }, [xLines, zLines, pedestalHeight, points, zOrientation]);
 
-  const { groupedPlates, shearPlates } = useMemo(() => {
+  // Combined plate groups for export
+  const { groupedPlates, shearPlates, twoWayShearPlates } = useMemo(() => {
     const momentPlates = new Set();
-    const shearPlates = new Set();
+    const oneWayShearPlates = new Set();
+    const twoWayShearPlates = new Set();
     const nx_plates = xLines.length - 1;
     const nz_plates = zLines.length - 1;
 
-    const numPlatesToAdd = Math.round(plateThickness / mesh);
-    
     points.forEach(p => {
-      // Find the grid indices of the pedestal's center point
-      const px_idx = xLines.indexOf(p.x);
-      const pz_idx = zLines.indexOf(p.z);
-
-      if (px_idx === -1 || pz_idx === -1) {
-        return; // Pedestal point not on a grid line, skip grouping for this point
-      }
+      const px_idx = findClosestIndex(xLines, p.x);
+      const pz_idx = findClosestIndex(zLines, p.z);
       
       const num_x_plates_moment = Math.round(p.length / mesh);
       const num_z_plates_moment = Math.round(p.width / mesh);
 
-      // Determine the range of plate indices to include for Moment group
       const start_x_idx_moment = Math.floor(px_idx - num_x_plates_moment / 2);
       const end_x_idx_moment = Math.ceil(px_idx + num_x_plates_moment / 2);
 
       const start_z_idx_moment = Math.floor(pz_idx - num_z_plates_moment / 2);
       const end_z_idx_moment = Math.ceil(pz_idx + num_z_plates_moment / 2);
 
-      // Add plates to Moment group
       for (let xi = Math.max(0, start_x_idx_moment); xi < Math.min(nx_plates, end_x_idx_moment); xi++) {
         for (let zi = Math.max(0, start_z_idx_moment); zi < Math.min(nz_plates, end_z_idx_moment); zi++) {
           const plateId = plateIdByCoord.get(`${xi},${zi}`);
           if (plateId) {
             momentPlates.add(plateId);
-            shearPlates.add(plateId);
           }
         }
       }
 
-      // Determine the range of plate indices to include for Shear group
-      const start_x_idx_shear = Math.floor(px_idx - num_x_plates_moment / 2 - numPlatesToAdd);
-      const end_x_idx_shear = Math.ceil(px_idx + num_x_plates_moment / 2 + numPlatesToAdd);
+      const numPlatesToAddOneWay = Math.round(plateThickness / mesh);
+      const start_x_idx_oneWay = start_x_idx_moment - numPlatesToAddOneWay;
+      const end_x_idx_oneWay = end_x_idx_moment + numPlatesToAddOneWay;
+      const start_z_idx_oneWay = start_z_idx_moment - numPlatesToAddOneWay;
+      const end_z_idx_oneWay = end_z_idx_moment + numPlatesToAddOneWay;
       
-      const start_z_idx_shear = Math.floor(pz_idx - num_z_plates_moment / 2 - numPlatesToAdd);
-      const end_z_idx_shear = Math.ceil(pz_idx + num_z_plates_moment / 2 + numPlatesToAdd);
-
-      // Add plates to Shear group, including adjacent plates
-      for (let xi = Math.max(0, start_x_idx_shear); xi < Math.min(nx_plates, end_x_idx_shear); xi++) {
-        for (let zi = Math.max(0, start_z_idx_shear); zi < Math.min(nz_plates, end_z_idx_shear); zi++) {
+      for (let xi = Math.max(0, start_x_idx_oneWay); xi < Math.min(nx_plates, end_x_idx_oneWay); xi++) {
+        for (let zi = Math.max(0, start_z_idx_oneWay); zi < Math.min(nz_plates, end_z_idx_oneWay); zi++) {
           const plateId = plateIdByCoord.get(`${xi},${zi}`);
           if (plateId) {
-            shearPlates.add(plateId);
+            oneWayShearPlates.add(plateId);
+          }
+        }
+      }
+
+      const numPlatesToAddTwoWay = Math.round(plateThickness / (2 * mesh));
+      const start_x_idx_2way = start_x_idx_moment - numPlatesToAddTwoWay;
+      const end_x_idx_2way = end_x_idx_moment + numPlatesToAddTwoWay;
+      const start_z_idx_2way = start_z_idx_moment - numPlatesToAddTwoWay;
+      const end_z_idx_2way = end_z_idx_moment + numPlatesToAddTwoWay;
+      
+      for (let xi = Math.max(0, start_x_idx_2way); xi < Math.min(nx_plates, end_x_idx_2way); xi++) {
+        for (let zi = Math.max(0, start_z_idx_2way); zi < Math.min(nz_plates, end_z_idx_2way); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) {
+            twoWayShearPlates.add(plateId);
           }
         }
       }
@@ -196,9 +222,105 @@ export default function App() {
 
     return {
       groupedPlates: Array.from(momentPlates).sort((a,b) => a-b),
-      shearPlates: Array.from(shearPlates).sort((a,b) => a-b)
+      shearPlates: Array.from(oneWayShearPlates).sort((a,b) => a-b),
+      twoWayShearPlates: Array.from(twoWayShearPlates).sort((a,b) => a-b)
     };
   }, [points, xLines, zLines, plateIdByCoord, mesh, plateThickness]);
+
+  // Calculate separate bounding boxes for each pedestal's groups for visualization
+  const pedestalGroupBoundingBoxes = useMemo(() => {
+    const getBoundingBoxForPlates = (plateIds) => {
+      if (plateIds.length === 0) return null;
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+      plateIds.forEach(plateId => {
+        const plate = plates.find(p => p.id === plateId);
+        if (plate) {
+          plate.nodes.forEach(nodeId => {
+            const node = nodes.find(n => n.id === nodeId);
+            if (node) {
+              minX = Math.min(minX, node.x);
+              maxX = Math.max(maxX, node.x);
+              minZ = Math.min(minZ, node.z);
+              maxZ = Math.max(maxZ, node.z);
+            }
+          });
+        }
+      });
+      return {
+        x: minX,
+        y: minZ,
+        width: maxX - minX,
+        height: maxZ - minZ,
+      };
+    };
+
+    const momentBoxes = [];
+    const oneWayShearBoxes = [];
+    const twoWayShearBoxes = [];
+
+    points.forEach(p => {
+      const px_idx = findClosestIndex(xLines, p.x);
+      const pz_idx = findClosestIndex(zLines, p.z);
+      
+      const nx_plates = xLines.length - 1;
+      const nz_plates = zLines.length - 1;
+
+      // Moment Group
+      const momentPlatesForPedestal = new Set();
+      const num_x_plates_moment = Math.round(p.length / mesh);
+      const num_z_plates_moment = Math.round(p.width / mesh);
+      const start_x_idx_moment = Math.floor(px_idx - num_x_plates_moment / 2);
+      const end_x_idx_moment = Math.ceil(px_idx + num_x_plates_moment / 2);
+      const start_z_idx_moment = Math.floor(pz_idx - num_z_plates_moment / 2);
+      const end_z_idx_moment = Math.ceil(pz_idx + num_z_plates_moment / 2);
+      for (let xi = Math.max(0, start_x_idx_moment); xi < Math.min(nx_plates, end_x_idx_moment); xi++) {
+        for (let zi = Math.max(0, start_z_idx_moment); zi < Math.min(nz_plates, end_z_idx_moment); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) momentPlatesForPedestal.add(plateId);
+        }
+      }
+      const momentBox = getBoundingBoxForPlates(Array.from(momentPlatesForPedestal));
+      if (momentBox) momentBoxes.push(momentBox);
+
+      // 1-Way Shear Group
+      const oneWayShearPlatesForPedestal = new Set();
+      const numPlatesToAddOneWay = Math.round(plateThickness / mesh);
+      const start_x_idx_oneWay = start_x_idx_moment - numPlatesToAddOneWay;
+      const end_x_idx_oneWay = end_x_idx_moment + numPlatesToAddOneWay;
+      const start_z_idx_oneWay = start_z_idx_moment - numPlatesToAddOneWay;
+      const end_z_idx_oneWay = end_z_idx_moment + numPlatesToAddOneWay;
+      for (let xi = Math.max(0, start_x_idx_oneWay); xi < Math.min(nx_plates, end_x_idx_oneWay); xi++) {
+        for (let zi = Math.max(0, start_z_idx_oneWay); zi < Math.min(nz_plates, end_z_idx_oneWay); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) oneWayShearPlatesForPedestal.add(plateId);
+        }
+      }
+      const oneWayShearBox = getBoundingBoxForPlates(Array.from(oneWayShearPlatesForPedestal));
+      if (oneWayShearBox) oneWayShearBoxes.push(oneWayShearBox);
+
+      // 2-Way Shear Group
+      const twoWayShearPlatesForPedestal = new Set();
+      const numPlatesToAddTwoWay = Math.round(plateThickness / (2 * mesh));
+      const start_x_idx_2way = start_x_idx_moment - numPlatesToAddTwoWay;
+      const end_x_idx_2way = end_x_idx_moment + numPlatesToAddTwoWay;
+      const start_z_idx_2way = start_z_idx_moment - numPlatesToAddTwoWay;
+      const end_z_idx_2way = end_z_idx_moment + numPlatesToAddTwoWay;
+      for (let xi = Math.max(0, start_x_idx_2way); xi < Math.min(nx_plates, end_x_idx_2way); xi++) {
+        for (let zi = Math.max(0, start_z_idx_2way); zi < Math.min(nz_plates, end_z_idx_2way); zi++) {
+          const plateId = plateIdByCoord.get(`${xi},${zi}`);
+          if (plateId) twoWayShearPlatesForPedestal.add(plateId);
+        }
+      }
+      const twoWayShearBox = getBoundingBoxForPlates(Array.from(twoWayShearPlatesForPedestal));
+      if (twoWayShearBox) twoWayShearBoxes.push(twoWayShearBox);
+    });
+
+    return {
+      moment: momentBoxes,
+      oneWayShear: oneWayShearBoxes,
+      twoWayShear: twoWayShearBoxes,
+    };
+  }, [points, xLines, zLines, plateIdByCoord, mesh, plateThickness, plates, nodes]);
 
 
   // Click to create a point
@@ -215,8 +337,9 @@ export default function App() {
     const cursorpt = pt.matrixTransform(svg.getScreenCTM().inverse());
     const xMeters = clamp((cursorpt.x) / pxPerMeter, 0, length);
     const zMeters = clamp((cursorpt.y) / pxPerMeter, 0, width);
-    const id = nextPointId.current++;
-    setPoints((p) => [...p, { id, x: xMeters, z: zMeters, length: 0.5, width: 0.3 }]);
+    const maxId = points.length > 0 ? Math.max(...points.map(p => p.id)) : 0;
+    const newId = maxId + 1;
+    setPoints((p) => [...p, { id: newId, x: xMeters, z: zMeters, length: 0.5, width: 0.3 }]);
   };
 
   // Drag to move a point (simple pointer drag)
@@ -313,7 +436,7 @@ export default function App() {
       lines.push(currentLine + ';');
     }
 
-    if (groupedPlates.length > 0 || shearPlates.length > 0) {
+    if (groupedPlates.length > 0 || shearPlates.length > 0 || twoWayShearPlates.length > 0) {
       lines.push("START GROUP DEFINITION");
       lines.push("ELEMENT");
       
@@ -325,6 +448,11 @@ export default function App() {
       // 1-Way Shear group
       if (shearPlates.length > 0) {
         lines.push(...formatGroupLines("1_WAY_SHEAR", shearPlates));
+      }
+      
+      // 2-Way Shear group
+      if (twoWayShearPlates.length > 0) {
+        lines.push(...formatGroupLines("2_WAY_SHEAR", twoWayShearPlates));
       }
 
       lines.push("END GROUP DEFINITION");
@@ -375,7 +503,7 @@ export default function App() {
 
     lines.push("FINISH");
     return lines.join("\n");
-  }, [nodes, plates, members, plateThickness, groupedPlates, shearPlates]);
+  }, [nodes, plates, members, plateThickness, groupedPlates, shearPlates, twoWayShearPlates]);
 
   // Export with filename
   const downloadTxt = () => {
@@ -386,6 +514,18 @@ export default function App() {
     a.download = fileName.trim() !== "" ? fileName : "mesh_nodes_plates.STD";
     a.click();
     URL.revokeObjectURL(url);
+  };
+
+  // State and ref for clipboard functionality
+  const exportTextRef = useRef(null);
+  const [copyMessage, setCopyMessage] = useState("");
+  const handleCopyToClipboard = () => {
+    if (exportTextRef.current) {
+        exportTextRef.current.select();
+        document.execCommand('copy');
+        setCopyMessage("Copied!");
+        setTimeout(() => setCopyMessage(""), 2000);
+    }
   };
 
   // Render sizes in pixels via viewBox (meters * pxPerMeter)
@@ -474,9 +614,23 @@ export default function App() {
         <div className="bg-white rounded-2xl shadow p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm text-slate-600">
-              Origin at upper-left (0, 0, 0). Click to add points. Drag points to modify.
+              Origin at upper-left (0, 0, 0).
             </div>
-            <div className="text-sm">Nodes: {nodes.length} · Plates: {plates.length} · Members: {members.length}</div>
+            <div className="text-sm">Nodes: {nodes.length} · Plates: {plates.length} · Members: {members.length} · 2-Way Shear Plates: {twoWayShearPlates.length}</div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4 mb-2">
+            <label className="inline-flex items-center text-sm">
+              <input type="checkbox" className="form-checkbox" checked={showMomentGroup} onChange={(e) => setShowMomentGroup(e.target.checked)} />
+              <span className="ml-2 text-blue-600">Show Moment Group</span>
+            </label>
+            <label className="inline-flex items-center text-sm">
+              <input type="checkbox" className="form-checkbox" checked={showOneWayShear} onChange={(e) => setShowOneWayShear(e.target.checked)} />
+              <span className="ml-2 text-green-600">Show 1-Way Shear Group</span>
+            </label>
+            <label className="inline-flex items-center text-sm">
+              <input type="checkbox" className="form-checkbox" checked={showTwoWayShear} onChange={(e) => setShowTwoWayShear(e.target.checked)} />
+              <span className="ml-2 text-red-600">Show 2-Way Shear Group</span>
+            </label>
           </div>
           <div className="overflow-auto border rounded-xl">
             <svg
@@ -499,10 +653,65 @@ export default function App() {
               {zLines.map((z, i) => (
                 <line key={`hz-${i}`} x1={0} y1={z * pxPerMeter} x2={viewW} y2={z * pxPerMeter} stroke="#cbd5e1" strokeWidth={1} />
               ))}
-              {/* User points */}
+              {/* Moment Group Bounding Box */}
+              {showMomentGroup && pedestalGroupBoundingBoxes.moment.map((box, i) => (
+                <rect
+                  key={`moment-box-${i}`}
+                  x={box.x * pxPerMeter}
+                  y={box.y * pxPerMeter}
+                  width={box.width * pxPerMeter}
+                  height={box.height * pxPerMeter}
+                  fill="none"
+                  stroke="#3b82f6"
+                  strokeWidth="2"
+                  strokeDasharray="5,5"
+                />
+              ))}
+              {/* 1-Way Shear Group Bounding Box */}
+              {showOneWayShear && pedestalGroupBoundingBoxes.oneWayShear.map((box, i) => (
+                <rect
+                  key={`one-way-box-${i}`}
+                  x={box.x * pxPerMeter}
+                  y={box.y * pxPerMeter}
+                  width={box.width * pxPerMeter}
+                  height={box.height * pxPerMeter}
+                  fill="none"
+                  stroke="#22c55e"
+                  strokeWidth="2"
+                  strokeDasharray="5,5"
+                />
+              ))}
+              {/* 2-Way Shear Group Bounding Box */}
+              {showTwoWayShear && pedestalGroupBoundingBoxes.twoWayShear.map((box, i) => (
+                <rect
+                  key={`two-way-box-${i}`}
+                  x={box.x * pxPerMeter}
+                  y={box.y * pxPerMeter}
+                  width={box.width * pxPerMeter}
+                  height={box.height * pxPerMeter}
+                  fill="none"
+                  stroke="#ef4444"
+                  strokeWidth="2"
+                  strokeDasharray="5,5"
+                />
+              ))}
+              {/* Pedestal rectangles, circles, and labels */}
               {points.map((p) => (
                 <g key={p.id} onPointerDown={onPointerDownPoint(p.id)}>
+                  {/* Transparent rectangle for pedestal dimensions */}
+                  <rect
+                    x={(p.x - p.length / 2) * pxPerMeter}
+                    y={(p.z - p.width / 2) * pxPerMeter}
+                    width={p.length * pxPerMeter}
+                    height={p.width * pxPerMeter}
+                    fill="#60a5fa" // Light blue color
+                    fillOpacity="0.3"
+                    stroke="#1e40af" // Darker blue stroke
+                    strokeWidth="1.5"
+                  />
+                  {/* Circle at the center of the pedestal */}
                   <circle cx={p.x * pxPerMeter} cy={p.z * pxPerMeter} r={8} fill="#1d4ed8" opacity={0.85} />
+                  {/* Text label for the pedestal */}
                   <text x={p.x * pxPerMeter + 10} y={p.z * pxPerMeter - 10} fontSize={28} fill="#0f172a">
                     P{p.id} ({round3(p.x)}, {round3(p.z)})
                   </text>
@@ -518,8 +727,8 @@ export default function App() {
         <div className="bg-white rounded-2xl shadow p-3">
           <div className="flex flex-wrap items-center justify-between font-medium mb-2 gap-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="text-sm">User Points :</span>
-              <label className="text-sm">x</label>
+              <span className="text-sm">Add Pedestal At :</span>
+              <label className="text-sm">X</label>
               <input
                 className="border rounded-lg px-2 py-1 w-20"
                 type="number"
@@ -527,7 +736,7 @@ export default function App() {
                 value={newPointX}
                 onChange={(e) => setNewPointX(parseFloat(e.target.value) || 0)}
               />
-              <label className="text-sm">z</label>
+              <label className="text-sm">Z</label>
               <input
                 className="border rounded-lg px-2 py-1 w-20"
                 type="number"
@@ -538,21 +747,21 @@ export default function App() {
               <button
                 onClick={addPointManually}
                 className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-indigo-600 text-white"
-                title="Add a new user point with specified X and Z coordinates"
+                title="Add a new pedestal with specified X and Z coordinates"
               >
-                Add Point
+                Add Pedestal
               </button>
             </div>
             <button
               onClick={() => setPoints([])}
               className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-white"
-              title="Clear all user points"
+              title="This action will delete all the pedestals"
             >
-              Clear Points
+              Delete All Pedestals
             </button>
           </div>
           {points.length === 0 && (
-            <div className="text-sm text-slate-600">Click on the surface to create points. Drag a point to move it.</div>
+            <div className="text-sm text-slate-600"></div>
           )}
           <div className="space-y-2 max-h-64 overflow-auto pr-1">
             {points
@@ -561,7 +770,7 @@ export default function App() {
               .map((p) => (
                 <div key={p.id} className="flex flex-wrap items-center gap-2">
                   <span className="text-sm w-6">P{p.id}</span>
-                  <label className="text-sm">x</label>
+                  <label className="text-sm">X</label>
                   <input
                     className="border rounded-lg px-2 py-1 w-20"
                     type="number"
@@ -572,7 +781,7 @@ export default function App() {
                       setPoints((arr) => arr.map((q) => (q.id === p.id ? { ...q, x: v } : q)));
                     }}
                   />
-                  <label className="text-sm">z</label>
+                  <label className="text-sm">Z</label>
                   <input
                     className="border rounded-lg px-2 py-1 w-20"
                     type="number"
@@ -619,9 +828,23 @@ export default function App() {
           </div>
         </div>
         <div className="bg-white rounded-2xl shadow p-3">
-          <div className="font-medium mb-2">Export Preview</div>
+          <div className="flex justify-between items-center mb-2">
+            <div className="font-medium">Export Preview</div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-green-600 transition-opacity duration-300">
+                {copyMessage}
+              </span>
+              <button
+                onClick={handleCopyToClipboard}
+                className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-slate-600 text-white"
+              >
+                Copy to Clipboard
+              </button>
+            </div>
+          </div>
           <textarea
-            className="w-full min-h-[720px] border rounded-xl p-2 text-xs font-mono"
+            ref={exportTextRef}
+            className="w-full min-h-[520px] border rounded-xl p-2 text-xs font-mono"
             readOnly
             value={exportText}
           />
@@ -633,7 +856,7 @@ export default function App() {
         </div>
       </div>
       <footer className="text-center text-xs text-slate-500 mt-6">
-        Upper-left origin (0,0,0). X → right, Z → down. Y is fixed at 0 for surface nodes. Mesh creates equal strips inside each segment bounded by user points and edges; remainder forms the last strip.
+        Upper-left origin (0,0,0). X → right, Z → down. Y is fixed at 0 for surface nodes. Mesh creates equal strips inside each segment bounded by pedestal and edges; remainder forms the last strip.
       </footer>
     </div>
   );
