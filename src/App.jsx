@@ -1,49 +1,62 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useMemo, useRef, useState, useCallback } from "react";
 import { format } from 'date-fns';
+import { clamp, round3, uniqSorted, findClosestIndex } from "./utils";
+import SVGCanvas from "./components/SVGCanvas";
+import PedestalList from "./components/PedestalList";
+import ExportPanel from "./components/ExportPanel";
+import useStore from "./store";
+import { saveAs } from "file-saver";
 
 // --- Utility helpers ---
-const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
-const round3 = (n) => Math.round(n * 1000) / 1000; // for display
-const uniqSorted = (arr, eps = 1e-6) => {
-  const a = Array.from(new Set(arr.map((x) => Math.round(x / eps) * eps)));
-  a.sort((x, y) => x - y);
-  return a;
-};
+// const clamp = (v, a, b) => Math.min(Math.max(v, a), b);
+// const round3 = (n) => Math.round(n * 1000) / 1000; // for display
+// const uniqSorted = (arr, eps = 1e-6) => {
+//   const a = Array.from(new Set(arr.map((x) => Math.round(x / eps) * eps)));
+//   a.sort((x, y) => x - y);
+//   return a;
+// };
 
 // Finds the index of the value in a sorted array that is closest to the target value.
-const findClosestIndex = (arr, target) => {
-  let closest = Infinity;
-  let closestIndex = -1;
-  for (let i = 0; i < arr.length; i++) {
-    const diff = Math.abs(arr[i] - target);
-    if (diff < closest) {
-      closest = diff;
-      closestIndex = i;
-    }
-  }
-  return closestIndex;
-};
+// const findClosestIndex = (arr, target) => {
+//   let closest = Infinity;
+//   let closestIndex = -1;
+//   for (let i = 0; i < arr.length; i++) {
+//     const diff = Math.abs(arr[i] - target);
+//     if (diff < closest) {
+//       closest = diff;
+//       closestIndex = i;
+//     }
+//   }
+//   return closestIndex;
+// };
 
 
 export default function App() {
-  // Inputs (meters)
-  const [length, setLength] = useState(6); // X
-  const [width, setWidth] = useState(4);  // Z
-  const [mesh, setMesh] = useState(0.2);  // square target size
-  const [pedestalHeight, setPedestalHeight] = useState(0.0);
-  const [plateThickness, setPlateThickness] = useState(0.3); // New state for plate thickness
-
-  const [zOrientation, setZOrientation] = useState("down"); // "up" or "down"
-  const [fileName, setFileName] = useState("Plate Geometry.STD");
-
-  // State for toggling group visibility
-  const [showMomentGroup, setShowMomentGroup] = useState(true);
-  const [showOneWayShear, setShowOneWayShear] = useState(true);
-  const [showTwoWayShear, setShowTwoWayShear] = useState(true);
-
-
-  // Points placed by user (x,z,length,width). y is always 0 on the surface.
-  const [points, setPoints] = useState([]); // {id, x, z, length, width}
+  // Zustand state
+  const {
+    length,
+    width,
+    mesh,
+    pedestalHeight,
+    plateThickness,
+    zOrientation,
+    fileName,
+    points,
+    showMomentGroup,
+    showOneWayShear,
+    showTwoWayShear,
+    setLength,
+    setWidth,
+    setMesh,
+    setPedestalHeight,
+    setPlateThickness,
+    setZOrientation,
+    setFileName,
+    setPoints,
+    setShowMomentGroup,
+    setShowOneWayShear,
+    setShowTwoWayShear,
+  } = useStore();
 
   // View / SVG
   const pxPerMeter = 120; // base scale; viewBox keeps it responsive
@@ -58,7 +71,7 @@ export default function App() {
 
   // Function to add a point manually from input fields
   const addPointManually = () => {
-    const maxId = points.length > 0 ? Math.max(...points.map(p => p.id)) : 0;
+    const maxId = points.length > 0 ? Math.max(...points.map((p) => p.id)) : 0;
     const newId = maxId + 1;
     setPoints((p) => [...p, { id: newId, x: newPointX, z: newPointZ, length: 0.5, width: 0.3 }]);
     setNewPointX(0);
@@ -67,7 +80,6 @@ export default function App() {
 
   // Compute grid lines that "respect" user points
   const { xLines, zLines } = useMemo(() => {
-    // Seed with origin and far edges
     const xCuts = uniqSorted([0, length, ...points.map((p) => clamp(p.x, 0, length))]);
     const zCuts = uniqSorted([0, width, ...points.map((p) => clamp(p.z, 0, width))]);
 
@@ -324,7 +336,7 @@ export default function App() {
 
 
   // Click to create a point
-  const onSvgClick = (e) => {
+  const onSvgClick = useCallback((e) => {
     // Only create a new point if there's no active drag operation.
     if (dragId !== null) {
       return;
@@ -340,15 +352,16 @@ export default function App() {
     const maxId = points.length > 0 ? Math.max(...points.map(p => p.id)) : 0;
     const newId = maxId + 1;
     setPoints((p) => [...p, { id: newId, x: xMeters, z: zMeters, length: 0.5, width: 0.3 }]);
-  };
+  }, [dragId, length, width, points, pxPerMeter]);
 
   // Drag to move a point (simple pointer drag)
-  const onPointerDownPoint = (id) => (e) => {
+  const onPointerDownPoint = useCallback((id) => (e) => {
     // Stop event propagation to prevent the click event from bubbling up to the SVG.
     e.stopPropagation();
     setDragId(id);
-  };
-  const onPointerMove = (e) => {
+  }, []);
+
+  const onPointerMove = useCallback((e) => {
     if (dragId == null) return;
     const svg = svgRef.current;
     const pt = svg.createSVGPoint();
@@ -358,13 +371,11 @@ export default function App() {
     const xMeters = clamp(cursorpt.x / pxPerMeter, 0, length);
     const zMeters = clamp(cursorpt.y / pxPerMeter, 0, width);
     setPoints((arr) => arr.map((p) => (p.id === dragId ? { ...p, x: xMeters, z: zMeters } : p)));
-  };
-  const onPointerUp = () => {
-    setDragId(null);
-  }
+  }, [dragId, length, width, pxPerMeter]);
 
-  // Delete a point
-  const deletePoint = (id) => setPoints((arr) => arr.filter((p) => p.id !== id));
+  const onPointerUp = useCallback(() => {
+    setDragId(null);
+  }, []);
 
   // Helper function to format grouped lines with character limit
   const formatGroupLines = (groupName, ids) => {
@@ -528,9 +539,60 @@ export default function App() {
     }
   };
 
+  const exportToJson = () => {
+    const state = {
+      length,
+      width,
+      mesh,
+      pedestalHeight,
+      plateThickness,
+      zOrientation,
+      fileName,
+      points,
+      showMomentGroup,
+      showOneWayShear,
+      showTwoWayShear,
+    };
+    const blob = new Blob([JSON.stringify(state, null, 2)], { type: "application/json" });
+    saveAs(blob, "plate_geometry_state.json");
+  };
+
+  const importFromJson = (event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const importedState = JSON.parse(e.target.result);
+        setLength(importedState.length);
+        setWidth(importedState.width);
+        setMesh(importedState.mesh);
+        setPedestalHeight(importedState.pedestalHeight);
+        setPlateThickness(importedState.plateThickness);
+        setZOrientation(importedState.zOrientation);
+        setFileName(importedState.fileName);
+        setPoints(Array.isArray(importedState.points) ? importedState.points : []);
+        setShowMomentGroup(importedState.showMomentGroup);
+        setShowOneWayShear(importedState.showOneWayShear);
+        setShowTwoWayShear(importedState.showTwoWayShear);
+      } catch (error) {
+        alert("Invalid JSON file");
+      }
+    };
+    reader.readAsText(file);
+  };
+
   // Render sizes in pixels via viewBox (meters * pxPerMeter)
   const viewW = length * pxPerMeter;
   const viewH = width * pxPerMeter;
+
+  const deletePoint = (id) => setPoints((arr) => arr.filter((p) => p.id !== id));
+
+  // Ensure points is treated as an array before calling .map to prevent runtime errors
+  const safePoints = Array.isArray(points) ? points : [];
+
+  console.log("Points state:", points); // Debugging to verify points value
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 p-4">
@@ -610,119 +672,51 @@ export default function App() {
               onChange={(e) => setPlateThickness(parseFloat(e.target.value) || 0.01)}
             />
           </div>
+          <div className="flex flex-col">
+            <label className="text-xs">Import JSON</label>
+            <input
+              type="file"
+              accept="application/json"
+              onChange={importFromJson}
+              className="border rounded-xl px-3 py-2 w-56"
+            />
+          </div>
+          <div className="flex flex-col">
+            <label className="text-xs">Export JSON</label>
+            <button
+              onClick={exportToJson}
+              className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-indigo-600 text-white"
+            >
+              Export to JSON
+            </button>
+          </div>
         </div>
         <div className="bg-white rounded-2xl shadow p-3">
           <div className="flex items-center justify-between mb-2">
             <div className="text-sm text-slate-600">
               Origin at upper-left (0, 0, 0).
             </div>
-            <div className="text-sm">Nodes: {nodes.length} · Plates: {plates.length} · Members: {members.length} · 2-Way Shear Plates: {twoWayShearPlates.length}</div>
+            <div className="text-sm">
+              Nodes: {nodes.length} · Plates: {plates.length} · Members: {members.length} · 2-Way Shear Plates: {twoWayShearPlates.length}
+            </div>
           </div>
-          <div className="flex flex-wrap items-center gap-4 mb-2">
-            <label className="inline-flex items-center text-sm">
-              <input type="checkbox" className="form-checkbox" checked={showMomentGroup} onChange={(e) => setShowMomentGroup(e.target.checked)} />
-              <span className="ml-2 text-blue-600">Show Moment Group</span>
-            </label>
-            <label className="inline-flex items-center text-sm">
-              <input type="checkbox" className="form-checkbox" checked={showOneWayShear} onChange={(e) => setShowOneWayShear(e.target.checked)} />
-              <span className="ml-2 text-green-600">Show 1-Way Shear Group</span>
-            </label>
-            <label className="inline-flex items-center text-sm">
-              <input type="checkbox" className="form-checkbox" checked={showTwoWayShear} onChange={(e) => setShowTwoWayShear(e.target.checked)} />
-              <span className="ml-2 text-red-600">Show 2-Way Shear Group</span>
-            </label>
-          </div>
-          <div className="overflow-auto border rounded-xl">
-            <svg
-              ref={svgRef}
-              className={`w-full h-[480px] touch-none select-none`}
-              viewBox={`0 0 ${viewW} ${viewH}`}
-              onClick={onSvgClick}
-              onPointerMove={onPointerMove}
-              onPointerUp={onPointerUp}
-              onPointerLeave={onPointerUp}
-            >
-              {/* Surface background */}
-              <rect x={0} y={0} width={viewW} height={viewH} fill="#f8fafc" />
-              {/* Outer border */}
-              <rect x={0} y={0} width={viewW} height={viewH} fill="none" stroke="#0f172a" strokeWidth={2} />
-              {/* Grid lines (respecting points) */}
-              {xLines.map((x, i) => (
-                <line key={`vx-${i}`} x1={x * pxPerMeter} y1={0} x2={x * pxPerMeter} y2={viewH} stroke="#cbd5e1" strokeWidth={1} />
-              ))}
-              {zLines.map((z, i) => (
-                <line key={`hz-${i}`} x1={0} y1={z * pxPerMeter} x2={viewW} y2={z * pxPerMeter} stroke="#cbd5e1" strokeWidth={1} />
-              ))}
-              {/* Moment Group Bounding Box */}
-              {showMomentGroup && pedestalGroupBoundingBoxes.moment.map((box, i) => (
-                <rect
-                  key={`moment-box-${i}`}
-                  x={box.x * pxPerMeter}
-                  y={box.y * pxPerMeter}
-                  width={box.width * pxPerMeter}
-                  height={box.height * pxPerMeter}
-                  fill="none"
-                  stroke="#3b82f6"
-                  strokeWidth="2"
-                  strokeDasharray="5,5"
-                />
-              ))}
-              {/* 1-Way Shear Group Bounding Box */}
-              {showOneWayShear && pedestalGroupBoundingBoxes.oneWayShear.map((box, i) => (
-                <rect
-                  key={`one-way-box-${i}`}
-                  x={box.x * pxPerMeter}
-                  y={box.y * pxPerMeter}
-                  width={box.width * pxPerMeter}
-                  height={box.height * pxPerMeter}
-                  fill="none"
-                  stroke="#22c55e"
-                  strokeWidth="2"
-                  strokeDasharray="5,5"
-                />
-              ))}
-              {/* 2-Way Shear Group Bounding Box */}
-              {showTwoWayShear && pedestalGroupBoundingBoxes.twoWayShear.map((box, i) => (
-                <rect
-                  key={`two-way-box-${i}`}
-                  x={box.x * pxPerMeter}
-                  y={box.y * pxPerMeter}
-                  width={box.width * pxPerMeter}
-                  height={box.height * pxPerMeter}
-                  fill="none"
-                  stroke="#ef4444"
-                  strokeWidth="2"
-                  strokeDasharray="5,5"
-                />
-              ))}
-              {/* Pedestal rectangles, circles, and labels */}
-              {points.map((p) => (
-                <g key={p.id} onPointerDown={onPointerDownPoint(p.id)}>
-                  {/* Transparent rectangle for pedestal dimensions */}
-                  <rect
-                    x={(p.x - p.length / 2) * pxPerMeter}
-                    y={(p.z - p.width / 2) * pxPerMeter}
-                    width={p.length * pxPerMeter}
-                    height={p.width * pxPerMeter}
-                    fill="#60a5fa" // Light blue color
-                    fillOpacity="0.3"
-                    stroke="#1e40af" // Darker blue stroke
-                    strokeWidth="1.5"
-                  />
-                  {/* Circle at the center of the pedestal */}
-                  <circle cx={p.x * pxPerMeter} cy={p.z * pxPerMeter} r={8} fill="#1d4ed8" opacity={0.85} />
-                  {/* Text label for the pedestal */}
-                  <text x={p.x * pxPerMeter + 10} y={p.z * pxPerMeter - 10} fontSize={28} fill="#0f172a">
-                    P{p.id} ({round3(p.x)}, {round3(p.z)})
-                  </text>
-                </g>
-              ))}
-              {/* Tiny node dots to visualize intersections (optional) */}
-              {nodes.filter(n => n.type === 'surface').map((n) => (
-                <circle key={n.id} cx={n.x * pxPerMeter} cy={n.z * pxPerMeter} r={2.2} fill="#64748b" />
-              ))}
-            </svg>
-          </div>
+          <SVGCanvas
+            length={length}
+            width={width}
+            pxPerMeter={pxPerMeter}
+            xLines={xLines}
+            zLines={zLines}
+            nodes={nodes}
+            points={safePoints}
+            pedestalGroupBoundingBoxes={pedestalGroupBoundingBoxes}
+            showMomentGroup={showMomentGroup}
+            showOneWayShear={showOneWayShear}
+            showTwoWayShear={showTwoWayShear}
+            onSvgClick={onSvgClick}
+            onPointerMove={onPointerMove}
+            onPointerUp={onPointerUp}
+            onPointerDownPoint={onPointerDownPoint}
+          />
         </div>
         <div className="bg-white rounded-2xl shadow p-3">
           <div className="flex flex-wrap items-center justify-between font-medium mb-2 gap-2">
@@ -760,100 +754,20 @@ export default function App() {
               Delete All Pedestals
             </button>
           </div>
-          {points.length === 0 && (
-            <div className="text-sm text-slate-600"></div>
-          )}
-          <div className="space-y-2 max-h-64 overflow-auto pr-1">
-            {points
-              .slice()
-              .sort((a, b) => a.id - b.id)
-              .map((p) => (
-                <div key={p.id} className="flex flex-wrap items-center gap-2">
-                  <span className="text-sm w-6">P{p.id}</span>
-                  <label className="text-sm">X</label>
-                  <input
-                    className="border rounded-lg px-2 py-1 w-20"
-                    type="number"
-                    step="0.1"
-                    value={round3(p.x)}
-                    onChange={(e) => {
-                      const v = clamp(parseFloat(e.target.value) || 0, 0, length);
-                      setPoints((arr) => arr.map((q) => (q.id === p.id ? { ...q, x: v } : q)));
-                    }}
-                  />
-                  <label className="text-sm">Z</label>
-                  <input
-                    className="border rounded-lg px-2 py-1 w-20"
-                    type="number"
-                    step="0.1"
-                    value={round3(p.z)}
-                    onChange={(e) => {
-                      const v = clamp(parseFloat(e.target.value) || 0, 0, width);
-                      setPoints((arr) => arr.map((q) => (q.id === p.id ? { ...q, z: v } : q)));
-                    }}
-                  />
-                  {/* New inputs for length and width */}
-                  <label className="text-sm">L</label>
-                  <input
-                    className="border rounded-lg px-2 py-1 w-20"
-                    type="number"
-                    step="0.01"
-                    min={0.1}
-                    value={round3(p.length)}
-                    onChange={(e) => {
-                      const v = Math.max(0.1, parseFloat(e.target.value) || 0.1);
-                      setPoints((arr) => arr.map((q) => (q.id === p.id ? { ...q, length: v } : q)));
-                    }}
-                  />
-                  <label className="text-sm">W</label>
-                  <input
-                    className="border rounded-lg px-2 py-1 w-20"
-                    type="number"
-                    step="0.01"
-                    min={0.1}
-                    value={round3(p.width)}
-                    onChange={(e) => {
-                      const v = Math.max(0.1, parseFloat(e.target.value) || 0.1);
-                      setPoints((arr) => arr.map((q) => (q.id === p.id ? { ...q, width: v } : q)));
-                    }}
-                  />
-                  <button
-                    onClick={() => deletePoint(p.id)}
-                    className="ml-auto text-red-600 text-sm hover:underline"
-                  >
-                    Delete
-                  </button>
-                </div>
-              ))}
-          </div>
-        </div>
-        <div className="bg-white rounded-2xl shadow p-3">
-          <div className="flex justify-between items-center mb-2">
-            <div className="font-medium">Export Preview</div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm text-green-600 transition-opacity duration-300">
-                {copyMessage}
-              </span>
-              <button
-                onClick={handleCopyToClipboard}
-                className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-slate-600 text-white"
-              >
-                Copy to Clipboard
-              </button>
-            </div>
-          </div>
-          <textarea
-            ref={exportTextRef}
-            className="w-full min-h-[520px] border rounded-xl p-2 text-xs font-mono"
-            readOnly
-            value={exportText}
+          <PedestalList
+            points={safePoints}
+            setPoints={setPoints}
+            length={length}
+            width={width}
+            deletePoint={deletePoint}
           />
-          <div className="flex justify-end mt-2">
-            <button onClick={downloadTxt} className="border px-3 py-2 rounded-2xl shadow-sm hover:shadow bg-indigo-600 text-white">
-              Download File
-            </button>
-          </div>
         </div>
+        <ExportPanel
+          exportText={exportText}
+          fileName={fileName}
+          setFileName={setFileName}
+          downloadTxt={downloadTxt}
+        />
       </div>
       <footer className="text-center text-xs text-slate-500 mt-6">
         Upper-left origin (0,0,0). X → right, Z → down. Y is fixed at 0 for surface nodes. Mesh creates equal strips inside each segment bounded by pedestal and edges; remainder forms the last strip.
